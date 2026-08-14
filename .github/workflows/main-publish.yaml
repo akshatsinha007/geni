@@ -12,7 +12,6 @@ on:
   push:
     branches:
       - main
-      - fix/sqlx-tls-sslmode # TEMP: for CI validation only, removed before merge
   workflow_dispatch:
 
 env:
