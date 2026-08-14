@@ -3,6 +3,21 @@ use std::fs;
 use std::path::PathBuf;
 use std::vec;
 
+/// Returns `database_url` with the password component masked, safe to
+/// write to logs. Falls back to returning the input unchanged if it
+/// doesn't parse as a URL.
+pub fn redact_database_url(database_url: &str) -> String {
+    let Ok(mut parsed) = url::Url::parse(database_url) else {
+        return database_url.to_string();
+    };
+
+    if parsed.password().is_some() {
+        let _ = parsed.set_password(Some("******"));
+    }
+
+    parsed.to_string()
+}
+
 pub fn get_local_migrations(folder: &PathBuf, ending: &str) -> Result<Vec<(i64, PathBuf)>> {
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
