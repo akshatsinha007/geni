@@ -104,9 +104,16 @@ jobs:
       - name: Verify static linkage
         run: |
           file dist/geni-linux-musl-amd64
-          # A truly static binary reports "not a dynamic executable" and
-          # ldd exits non-zero for it — that's the expected, passing case.
-          ldd dist/geni-linux-musl-amd64 && exit 1 || true
+          # musl binaries build as static-pie by default: `file` reports
+          # "static-pie linked" and `ldd` (unlike for plain static
+          # binaries) exits 0 and prints "statically linked" rather than
+          # erroring — so check ldd's output, not its exit code.
+          if ldd dist/geni-linux-musl-amd64 2>&1 | grep -qi 'statically linked\|not a dynamic executable'; then
+            echo "Confirmed static binary"
+          else
+            echo "::error::dist/geni-linux-musl-amd64 does not appear to be statically linked"
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: geni-linux-musl-amd64
