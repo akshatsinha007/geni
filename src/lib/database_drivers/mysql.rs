@@ -1,6 +1,7 @@
 use crate::database_drivers::{utils, DatabaseDriver};
+use crate::utils::redact_database_url;
 use anyhow::{bail, Result};
-use log::info;
+use log::{info, warn};
 
 use sqlx::mysql::MySqlRow;
 use sqlx::Executor;
@@ -26,24 +27,34 @@ impl MySQLDriver {
         migrations_folder: String,
         schema_file: String,
     ) -> Result<MySQLDriver> {
+        let redacted_url = redact_database_url(db_url);
+        info!("Connecting to MySQL database at {redacted_url}");
+
         let mut client = MySqlConnection::connect(db_url).await;
 
         let wait_timeout = wait_timeout.unwrap_or(0);
 
-        if client.is_err() {
+        if let Err(e) = client.as_ref() {
+            warn!("Initial connection to {redacted_url} failed: {e}");
+            let mut last_err = e.to_string();
             let mut count = 0;
             loop {
-                info!("Waiting for database to be ready");
                 if count > wait_timeout {
-                    bail!("Database is not ready");
+                    bail!(
+                        "Database is not ready after waiting {wait_timeout}s: {last_err}"
+                    );
                 }
+
+                info!("Waiting for database to be ready (attempt {}/{wait_timeout})", count + 1);
 
                 match MySqlConnection::connect(db_url).await {
                     Ok(c) => {
                         client = Ok(c);
                         break;
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        warn!("Connection attempt {} to {redacted_url} failed: {e}", count + 1);
+                        last_err = e.to_string();
                         count += 1;
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                         continue;
@@ -51,6 +62,8 @@ impl MySQLDriver {
                 }
             }
         }
+
+        info!("Connected to MySQL database at {redacted_url}");
 
         let mut url_path = url::Url::parse(db_url)?;
         if url_path.host_str().unwrap() == "localhost" {

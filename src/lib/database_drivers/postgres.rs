@@ -1,6 +1,7 @@
 use crate::database_drivers::DatabaseDriver;
+use crate::utils::redact_database_url;
 use anyhow::{bail, Result};
-use log::info;
+use log::{info, warn};
 use sqlx::postgres::PgRow;
 use sqlx::Executor;
 use sqlx::{Connection, PgConnection, Row};
@@ -27,24 +28,34 @@ impl PostgresDriver {
         migrations_folder: String,
         schema_file: String,
     ) -> Result<PostgresDriver> {
+        let redacted_url = redact_database_url(db_url);
+        info!("Connecting to Postgres database at {redacted_url}");
+
         let mut client = PgConnection::connect(db_url).await;
 
         let wait_timeout = wait_timeout.unwrap_or(0);
 
-        if client.is_err() {
+        if let Err(e) = client.as_ref() {
+            warn!("Initial connection to {redacted_url} failed: {e}");
+            let mut last_err = e.to_string();
             let mut count = 0;
             loop {
-                info!("Waiting for database to be ready");
                 if count > wait_timeout {
-                    bail!("Database is not ready");
+                    bail!(
+                        "Database is not ready after waiting {wait_timeout}s: {last_err}"
+                    );
                 }
+
+                info!("Waiting for database to be ready (attempt {}/{wait_timeout})", count + 1);
 
                 match PgConnection::connect(db_url).await {
                     Ok(c) => {
                         client = Ok(c);
                         break;
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        warn!("Connection attempt {} to {redacted_url} failed: {e}", count + 1);
+                        last_err = e.to_string();
                         count += 1;
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                         continue;
@@ -52,6 +63,8 @@ impl PostgresDriver {
                 }
             }
         }
+
+        info!("Connected to Postgres database at {redacted_url}");
 
         let p = PostgresDriver {
             db: client.unwrap(),
