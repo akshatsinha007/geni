@@ -91,6 +91,12 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.tag.outputs.version }}
+          # provenance/sbom attestations wrap the pushed digest in an
+          # extra index (an "unknown/unknown" manifest), which corrupts
+          # the naive digest-merge into a manifest list below — disable
+          # both so each per-arch push is a plain single-platform manifest.
+          provenance: false
+          sbom: false
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
       - name: Export digest
         run: |
