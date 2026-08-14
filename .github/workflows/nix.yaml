@@ -28,6 +28,8 @@ jobs:
         nix_path: nixpkgs=channel:nixos-unstable
     - name: Nix flake check
       run: nix flake check
+    - name: TEMP full build log
+      run: nix build .#geni -L
     - name: Test nix build
-      run: | 
+      run: |
         nix run . -- --help | grep -qE "Usage: geni( \[OPTIONS\])? <COMMAND>" || exit 2
