@@ -1,4 +1,7 @@
 # Geni
+
+> **Note:** This is a fork of [emilpriver/geni](https://github.com/emilpriver/geni), maintained by [@akshatsinha007](https://github.com/akshatsinha007). Docker images, the GitHub Action, and binary releases referenced in this README are built and published from this fork's own repository/GHCR namespace, not upstream.
+
 Geni is a standalone migration tool designed to work in conjunction with your preferred ORM/toolkit/code. It allows multiple developers to collaborate without overriding database migrations. It can be used in a CD pipeline alongside your code to ensure your database stays up to date.
 
 This project was heavily inspired by [dbmate](https://github.com/amacneil/dbmate) and was created because dbmate lacked support for LibSQL.
@@ -43,7 +46,7 @@ The application is developed using the Rust programming language and relies on t
 ### Github
 
 ```bash
-$ sudo curl -fsSL -o /usr/local/bin/geni https://github.com/emilpriver/geni/releases/latest/download/geni-linux-amd64
+$ sudo curl -fsSL -o /usr/local/bin/geni https://github.com/akshatsinha007/geni/releases/latest/download/geni-linux-amd64
 $ sudo chmod +x /usr/local/bin/geni
 ```
 
@@ -66,7 +69,7 @@ pkgx geni up
 ### Nix flake
 Run using nix
 ```bash
-nix run github:emilpriver/geni -- up
+nix run github:akshatsinha007/geni -- up
 ```
 
 
@@ -78,24 +81,36 @@ cargo install geni
 
 ### Docker
 
-Docker images are published to GitHub Container Registry ([ghcr.io/emilpriver/geni](https://ghcr.io/emilpriver/geni)).
+Docker images are published to GitHub Container Registry ([ghcr.io/akshatsinha007/geni](https://ghcr.io/akshatsinha007/geni)).
 
 ```bash
-$ docker run --rm -it --network=host ghcr.io/emilpriver/geni:latest --help
+$ docker run --rm -it --network=host ghcr.io/akshatsinha007/geni:latest --help
 ```
 there is also a slim docker image that don't have each database respective libraries(such as pg_dump). 
 
 Note: *This image won't try to dump the database*
 
 ```bash
-$ docker run --rm -it --network=host ghcr.io/emilpriver/geni:latest-slim --help
+$ docker run --rm -it --network=host ghcr.io/akshatsinha007/geni:latest-slim --help
 ```
 
 If you wish to create or apply migrations, you will need to use Docker's [bind mount](https://docs.docker.com/storage/bind-mounts/) feature to make your local working directory (`pwd`) available inside the geni container:
 
 ```bash
-$ docker run --rm -it --network=host -v "$(pwd)/migrations:/migrations" ghcr.io/emilpriver/geni:latest new create_users_table`
+$ docker run --rm -it --network=host -v "$(pwd)/migrations:/migrations" ghcr.io/akshatsinha007/geni:latest new create_users_table`
 ```
+
+#### Bleeding-edge builds from `main`
+
+`main` is continuously built and published: every push builds a native multi-arch image (`linux/amd64` + `linux/arm64`, built per-arch on native runners rather than via QEMU) and pushes it to GHCR, tagged `<7-char-commit-sha>-<version>` (e.g. `766c658-1.3.3`) so any build traces back to the exact commit and `Cargo.toml` version it came from:
+
+```bash
+$ docker run --rm -it --network=host ghcr.io/akshatsinha007/geni:<sha>-<version> --help
+```
+
+The same push also builds a static, musl-linked `x86_64-unknown-linux-musl` binary and publishes it as a prerelease on the [Releases page](https://github.com/akshatsinha007/geni/releases) under the same tag.
+
+This is separate from the tagged `vX.Y.Z` release flow (`:latest` image + full OS/arch binary matrix + crates.io publish) — it exists so you can pull a verified, stable build straight off `main` between official releases.
 
 ### Commands
 
@@ -284,7 +299,7 @@ V1 tunnel support is local CLI only. The published Docker image and GitHub Actio
 ### Github Workflow
 
 ```yaml
-- uses: emilpriver/geni@main
+- uses: akshatsinha007/geni@main
   with:
     migrations_folder: "./migrations"
     wait_timeout: "30"
