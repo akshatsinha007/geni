@@ -87,6 +87,8 @@ jobs:
           context: .
           file: Dockerfile
           platforms: ${{ matrix.platform }}
+          build-args: |
+            CARGO_PROFILE=ci-release
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.tag.outputs.version }}
@@ -96,6 +98,13 @@ jobs:
           # both so each per-arch push is a plain single-platform manifest.
           provenance: false
           sbom: false
+          # Scoped per-arch: amd64 and arm64 produce different layers and
+          # would otherwise thrash a shared cache. The Dockerfile's
+          # cargo-chef split means this cache survives source-only
+          # changes (the common case), only missing when Cargo.lock
+          # changes.
+          cache-from: type=gha,scope=docker-build-${{ matrix.arch }}
+          cache-to: type=gha,scope=docker-build-${{ matrix.arch }},mode=max
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
       - name: Export digest
         run: |
@@ -149,13 +158,17 @@ jobs:
           sudo apt-get install -y musl-tools
       - uses: Swatinem/rust-cache@v2
         with:
-          key: musl-release
+          key: musl-ci-release
       - name: Build static binary
-        run: cargo build --release --target x86_64-unknown-linux-musl --verbose
+        # Uses the faster ci-release profile (see Cargo.toml) to match the
+        # main-publish Docker image and keep per-push CI time down; the
+        # official tagged release binaries (rust.yaml) keep the fully
+        # optimized `release` profile.
+        run: cargo build --profile ci-release --target x86_64-unknown-linux-musl --verbose
       - name: Package artifact
         run: |
           mkdir -p dist
-          cp target/x86_64-unknown-linux-musl/release/geni dist/geni-linux-musl-amd64
+          cp target/x86_64-unknown-linux-musl/ci-release/geni dist/geni-linux-musl-amd64
           chmod +x dist/geni-linux-musl-amd64
       - name: Verify static linkage
         run: |

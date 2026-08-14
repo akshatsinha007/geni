@@ -49,8 +49,21 @@ testcontainers = "0.27.2"
 serial_test = "3.2.0"
 
 [profile.release]
-opt-level = 'z'     
-lto = true         
-codegen-units = 1  
-panic = 'abort'   
-strip = true     
+opt-level = 'z'
+lto = true
+codegen-units = 1
+panic = 'abort'
+strip = true
+
+# Used only for the per-commit `main` Docker image / musl binary built by
+# main-publish.yaml. Fat LTO + codegen-units=1 above is a multi-minute tax
+# on this dependency tree (sqlx, libsql, turso) that's worth paying once
+# for the official tagged release (docker.yaml/rust.yaml, crates.io) but
+# not on every push to main. Thin LTO + parallel codegen trades a bit of
+# binary size/runtime perf for much faster CI builds; panic/strip are
+# inherited unchanged.
+[profile.ci-release]
+inherits = "release"
+opt-level = 1
+lto = "thin"
+codegen-units = 16

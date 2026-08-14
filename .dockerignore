@@ -1,0 +1,12 @@
+.git
+.github
+.claude
+.agents
+target
+dist
+docs
+examples
+*.md
+CHANGELOG
+.vscode
+.idea
