@@ -1,0 +1,27 @@
+name: Compile Check
+
+# Fast feedback loop: just verify the crate compiles (all targets, all features)
+# without running the full test/build-matrix pipeline in rust.yaml.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cargo-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (all targets, all features)
+        run: cargo check --workspace --all-targets --all-features --verbose
