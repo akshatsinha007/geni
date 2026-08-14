@@ -1,0 +1,187 @@
+name: Publish main image & POSIX binary
+
+# Continuous-delivery workflow for `main`: on every push, builds a
+# multi-arch container image and a static POSIX (musl) binary, both
+# tagged with `<7-char-commit-sha>-<Cargo.toml version>` so every
+# artifact traces back to the exact commit + version it was built from.
+#
+# This is separate from docker.yaml/rust.yaml, which handle the official
+# `vX.Y.Z` tag-triggered release flow (crates.io publish, full OS/arch
+# binary matrix, `latest` image tag).
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: main-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tag:
+    name: Compute artifact tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.compute.outputs.tag }}
+      version: ${{ steps.compute.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute sha-version tag
+        id: compute
+        run: |
+          version=$(sed -n '/\[package\]/,/\[.*\]/p' Cargo.toml | awk -F' = ' '$1 ~ /version/ {gsub(/"/, "", $2); print $2; exit}')
+          sha_short="${GITHUB_SHA:0:7}"
+          tag="${sha_short}-${version}"
+
+          if [ -z "$version" ]; then
+            echo "Could not read version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          echo "Resolved tag: $tag"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  # Built per-arch on native runners rather than via QEMU emulation:
+  # emulated `cargo build` for this dependency tree (sqlx, tantivy,
+  # turso, tonic, ...) took well over an hour and never finished under
+  # QEMU. Each arch compiles natively here, pushed to GHCR by digest
+  # only; the `merge` job below stitches the digests into one
+  # multi-arch manifest under the real tag.
+  docker:
+    name: Build & push (${{ matrix.arch }})
+    needs: [tag]
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.tag.outputs.version }}
+          # provenance/sbom attestations wrap the pushed digest in an
+          # extra index (an "unknown/unknown" manifest), which corrupts
+          # the naive digest-merge into a manifest list below — disable
+          # both so each per-arch push is a plain single-platform manifest.
+          provenance: false
+          sbom: false
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-manifest:
+    name: Merge multi-arch manifest
+    needs: [tag, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: /tmp/digests
+          merge-multiple: true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE_NAME }}:${{ needs.tag.outputs.tag }} \
+            $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
+      - name: Inspect
+        run: docker buildx imagetools inspect ${{ env.IMAGE_NAME }}:${{ needs.tag.outputs.tag }}
+
+  posix-binary:
+    name: Build & publish static musl binary
+    needs: [tag]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl target toolchain
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl-release
+      - name: Build static binary
+        run: cargo build --release --target x86_64-unknown-linux-musl --verbose
+      - name: Package artifact
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-musl/release/geni dist/geni-linux-musl-amd64
+          chmod +x dist/geni-linux-musl-amd64
+      - name: Verify static linkage
+        run: |
+          file dist/geni-linux-musl-amd64
+          # musl binaries build as static-pie by default: `file` reports
+          # "static-pie linked" and `ldd` (unlike for plain static
+          # binaries) exits 0 and prints "statically linked" rather than
+          # erroring — so check ldd's output, not its exit code.
+          if ldd dist/geni-linux-musl-amd64 2>&1 | grep -qi 'statically linked\|not a dynamic executable'; then
+            echo "Confirmed static binary"
+          else
+            echo "::error::dist/geni-linux-musl-amd64 does not appear to be statically linked"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: geni-linux-musl-amd64
+          path: dist/geni-linux-musl-amd64
+      - name: Publish release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.tag.outputs.tag }}
+          name: ${{ needs.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          generate_release_notes: true
+          files: dist/geni-linux-musl-amd64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
