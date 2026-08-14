@@ -1,0 +1,124 @@
+name: Publish main image & POSIX binary
+
+# Continuous-delivery workflow for `main`: on every push, builds a
+# multi-arch container image and a static POSIX (musl) binary, both
+# tagged with `<7-char-commit-sha>-<Cargo.toml version>` so every
+# artifact traces back to the exact commit + version it was built from.
+#
+# This is separate from docker.yaml/rust.yaml, which handle the official
+# `vX.Y.Z` tag-triggered release flow (crates.io publish, full OS/arch
+# binary matrix, `latest` image tag).
+on:
+  push:
+    branches:
+      - main
+      - fix/sqlx-tls-sslmode # TEMP: for CI validation only, removed before merge
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: main-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tag:
+    name: Compute artifact tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.compute.outputs.tag }}
+      version: ${{ steps.compute.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute sha-version tag
+        id: compute
+        run: |
+          version=$(sed -n '/\[package\]/,/\[.*\]/p' Cargo.toml | awk -F' = ' '$1 ~ /version/ {gsub(/"/, "", $2); print $2; exit}')
+          sha_short="${GITHUB_SHA:0:7}"
+          tag="${sha_short}-${version}"
+
+          if [ -z "$version" ]; then
+            echo "Could not read version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          echo "Resolved tag: $tag"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  docker:
+    name: Build & push multi-arch image
+    needs: [tag]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ needs.tag.outputs.tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.tag.outputs.version }}
+
+  posix-binary:
+    name: Build & publish static musl binary
+    needs: [tag]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl target toolchain
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl-release
+      - name: Build static binary
+        run: cargo build --release --target x86_64-unknown-linux-musl --verbose
+      - name: Package artifact
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-musl/release/geni dist/geni-linux-musl-amd64
+          chmod +x dist/geni-linux-musl-amd64
+      - name: Verify static linkage
+        run: |
+          file dist/geni-linux-musl-amd64
+          # A truly static binary reports "not a dynamic executable" and
+          # ldd exits non-zero for it — that's the expected, passing case.
+          ldd dist/geni-linux-musl-amd64 && exit 1 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: geni-linux-musl-amd64
+          path: dist/geni-linux-musl-amd64
+      - name: Publish release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.tag.outputs.tag }}
+          name: ${{ needs.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          generate_release_notes: true
+          files: dist/geni-linux-musl-amd64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
